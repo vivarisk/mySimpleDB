@@ -22,6 +22,9 @@ import java.util.*;
  */
 public class HeapFile implements DbFile {
 
+    private final File file;
+    private final TupleDesc td;
+
     /**
      * Constructs a heap file backed by the specified file.
      * 
@@ -31,6 +34,8 @@ public class HeapFile implements DbFile {
      */
     public HeapFile(File f, TupleDesc td) {
         // some code goes here
+        this.file = f;
+        this.td = td;
     }
 
     /**
@@ -40,7 +45,7 @@ public class HeapFile implements DbFile {
      */
     public File getFile() {
         // some code goes here
-        return null;
+        return file;
     }
 
     /**
@@ -54,7 +59,7 @@ public class HeapFile implements DbFile {
      */
     public int getId() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return file.getAbsoluteFile().hashCode();
     }
 
     /**
@@ -64,13 +69,43 @@ public class HeapFile implements DbFile {
      */
     public TupleDesc getTupleDesc() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return td;
     }
 
     // see DbFile.java for javadocs
     public Page readPage(PageId pid) {
         // some code goes here
-        return null;
+        //后面再看看
+        int tableId = pid.getTableId();
+        int pgNo = pid.getPageNumber();
+        int pageSize = BufferPool.getPageSize();
+
+        RandomAccessFile f = null;
+        try{
+            f = new RandomAccessFile(file, "r");
+            if((pgNo + 1) * pageSize > f.length()){
+                f.close();
+                throw new IllegalArgumentException(String.format("table %d page %d is invalid", tableId, pgNo));
+            }
+            byte[] bytes = new byte[pageSize];
+            f.seek(pgNo * pageSize);
+            int read = f.read(bytes, 0, pageSize);
+            if(read != pageSize){
+                throw new IllegalArgumentException(String.format("table %d page %d is invalid", tableId, pgNo));
+            }
+            HeapPageId id = new HeapPageId(pid.getTableId(), pid.getPageNumber());
+            return new HeapPage(id, bytes);
+
+        }catch (IOException e){
+            e.printStackTrace();
+        }finally {
+            try{
+                f.close();
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+        }
+        throw new IllegalArgumentException(String.format("table %d page %d is invalid", tableId, pgNo));
     }
 
     // see DbFile.java for javadocs
@@ -84,7 +119,9 @@ public class HeapFile implements DbFile {
      */
     public int numPages() {
         // some code goes here
-        return 0;
+        //以后再看看：如果文件最后不够一页呢？
+        int num = (int) Math.floor((file.length() * 1.0) / BufferPool.getPageSize());
+        return num;
     }
 
     // see DbFile.java for javadocs
@@ -104,10 +141,104 @@ public class HeapFile implements DbFile {
     }
 
     // see DbFile.java for javadocs
+    //很懵，以后再看看
     public DbFileIterator iterator(TransactionId tid) {
         // some code goes here
-        return null;
+        return new HeapFileIterator(tid, this);
     }
+
+    /**
+     * HeapFile迭代器，用于遍历HeapFile的所有tuple；
+     * 需要使用上BufferPool.getPage(),注意一次不能读出HeapFile的所有tuples，不然会出现OOM
+     */
+    private static class HeapFileIterator implements DbFileIterator {
+
+        private final TransactionId tid;
+        private final HeapFile file;
+        private Iterator<Tuple> it;
+        private int pageNo;
+        private Tuple next;
+        private boolean open;
+
+        public HeapFileIterator(TransactionId tid, HeapFile file) {
+            this.tid = tid;
+            this.file = file;
+        }
+
+        @Override
+        public void open() throws DbException, TransactionAbortedException {
+            open = true;
+            this.pageNo = 0;
+            it = getTupleIterator(pageNo);
+        }
+
+        /**
+         * 根据pageNo从buffer pool 或者磁盘读出HeapPage并返回其tuple的迭代器
+         * @param pageNo
+         * @return
+         * @throws TransactionAbortedException
+         * @throws DbException
+         */
+        private Iterator<Tuple> getTupleIterator(int pageNo) throws TransactionAbortedException, DbException{
+            if(pageNo >= 0 && pageNo < file.numPages()) {
+                HeapPageId pid = new HeapPageId(file.getId(), pageNo);
+                HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_ONLY);
+                if(page == null) throw new DbException("get iterator fail! pageNo #" + pageNo + "# is invalid!");
+                Iterator<Tuple> it = page.iterator();
+                return it;
+            }
+            throw new DbException("get iterator fail!!! pageNo #" + pageNo + "# is invalid!");
+        }
+
+        @Override
+        public boolean hasNext() throws DbException, TransactionAbortedException {
+            //需要先判断文件有没有打开
+            if (!this.open) return false;
+            if (next == null) next = fetchNext();
+            return next != null;
+        }
+
+        @Override
+        public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+            if (!this.open) throw new NoSuchElementException("Not open!");
+            if (next == null) {
+                next = fetchNext();
+                if (next == null) {
+                    throw new NoSuchElementException("iterator don't have next");
+                }
+            }
+            Tuple result = next;
+            next = null;
+            return result;
+        }
+
+        private Tuple fetchNext() throws TransactionAbortedException, DbException {
+            if(!it.hasNext()) {
+                //往后面寻找下一个不为空的数据页
+                while(pageNo < file.numPages() - 1) {
+                    pageNo ++;
+                    it = getTupleIterator(pageNo);
+                    if (it.hasNext()) return it.next();
+                }
+                //如果后面的数据页都为空，则返回null
+                return null;
+            }
+            return it.next();
+        }
+
+        @Override
+        public void rewind() throws DbException, TransactionAbortedException {
+            close();
+            open();
+        }
+
+        @Override
+        public void close() {
+            it = null;
+            open = false;
+        }
+    }
+
 
 }
 

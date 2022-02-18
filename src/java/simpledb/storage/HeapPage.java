@@ -73,7 +73,8 @@ public class HeapPage implements Page {
     */
     private int getNumTuples() {        
         // some code goes here
-        return 0;
+        int num = (int) Math.floor((BufferPool.getPageSize() * 8) / (td.getSize() * 8 + 1));
+        return num;
 
     }
 
@@ -81,10 +82,9 @@ public class HeapPage implements Page {
      * Computes the number of bytes in the header of a page in a HeapFile with each tuple occupying tupleSize bytes
      * @return the number of bytes in the header of a page in a HeapFile with each tuple occupying tupleSize bytes
      */
-    private int getHeaderSize() {        
-        
+    private int getHeaderSize() {
         // some code goes here
-        return 0;
+        return (int) Math.ceil(getNumTuples() / 8.0);
                  
     }
     
@@ -118,7 +118,7 @@ public class HeapPage implements Page {
      */
     public HeapPageId getId() {
     // some code goes here
-    throw new UnsupportedOperationException("implement this");
+        return pid;
     }
 
     /**
@@ -288,7 +288,13 @@ public class HeapPage implements Page {
      */
     public int getNumEmptySlots() {
         // some code goes here
-        return 0;
+        int count = 0;
+        for(int i=0; i<numSlots; ++i){
+            if(!isSlotUsed(i)){
+                ++count;
+            }
+        }
+        return count;
     }
 
     /**
@@ -296,7 +302,13 @@ public class HeapPage implements Page {
      */
     public boolean isSlotUsed(int i) {
         // some code goes here
-        return false;
+        //大端存储
+        //比如找第3个，要找首个字节从右往左数第3个(从0开始)
+        int index = i / 8;
+        int remainder = i % 8;
+        int bytei = header[index];
+        int biti = (bytei >> remainder) & 1;
+        return biti == 1;
     }
 
     /**
@@ -313,7 +325,13 @@ public class HeapPage implements Page {
      */
     public Iterator<Tuple> iterator() {
         // some code goes here
-        return null;
+        List<Tuple> list = new ArrayList<>();
+        for(int i=0; i<numSlots; ++i){
+            if(isSlotUsed(i)){
+                list.add(tuples[i]);
+            }
+        }
+        return list.iterator();
     }
 
 }
