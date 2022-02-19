@@ -88,18 +88,14 @@ public class Catalog {
      */
     public int getTableId(String name) throws NoSuchElementException {
         // some code goes here
-        Integer res = null;
-        for(Map.Entry<Integer, Table> entry : tables.entrySet()){
-            if(entry.getValue().name.equals(name)){
-                res = entry.getKey();
-                break;
-            }
+        if(name == null){
+            throw new NoSuchElementException("can not find table for this name : " + name);
         }
-        if(res == null){
-            throw new NoSuchElementException("can not find id for " + name);
-        }else{
-            return res;
+        Integer pid = nameToId.get(name);
+        if(pid == null){
+            throw new NoSuchElementException("can not find table for this name : " + name);
         }
+        return pid;
     }
 
     /**
