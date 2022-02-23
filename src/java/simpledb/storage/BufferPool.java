@@ -9,7 +9,9 @@ import simpledb.transaction.TransactionId;
 
 import java.io.*;
 
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * BufferPool manages the reading and writing of pages into memory from
@@ -34,7 +36,7 @@ public class BufferPool {
     public static final int DEFAULT_PAGES = 50;
 
     private final int numPages;
-    private final ConcurrentHashMap<Integer, Page> pageCache;
+    private final Map<Integer, Page> pageCache;
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -44,7 +46,12 @@ public class BufferPool {
     public BufferPool(int numPages) {
         // some code goes here
         this.numPages = numPages;
-        pageCache = new ConcurrentHashMap<>();
+        pageCache = new LinkedHashMap<Integer, Page>(pageSize, 0.75f, true){
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Integer, Page> eldest) {
+                return size() > numPages;
+            }
+        };
     }
     
     public static int getPageSize() {
@@ -149,6 +156,13 @@ public class BufferPool {
         throws DbException, IOException, TransactionAbortedException {
         // some code goes here
         // not necessary for lab1
+        DbFile file = Database.getCatalog().getDatabaseFile(tableId);
+        List<Page> pages = file.insertTuple(tid, t);
+        //将页面写到缓存中
+        for (Page p : pages) {
+            p.markDirty(true, tid);
+            pageCache.put(p.getId().hashCode(), p);
+        }
     }
 
     /**
@@ -168,6 +182,14 @@ public class BufferPool {
         throws DbException, IOException, TransactionAbortedException {
         // some code goes here
         // not necessary for lab1
+        DbFile file = Database.getCatalog().getDatabaseFile(t.getRecordId().getPageId().getTableId());
+        List<Page> pages = file.deleteTuple(tid, t);
+        //将页面写到缓存中
+        for (Page p : pages) {
+            p.markDirty(true, tid);
+            //后期需要保证线程安全
+            pageCache.put(p.getId().hashCode(), p);
+        }
     }
 
     /**
@@ -178,7 +200,12 @@ public class BufferPool {
     public synchronized void flushAllPages() throws IOException {
         // some code goes here
         // not necessary for lab1
-
+        for(Map.Entry<Integer, Page> entry : pageCache.entrySet()) {
+            Page page = entry.getValue();
+            if (page.isDirty() != null) {
+                flushPage(page.getId());
+            }
+        }
     }
 
     /** Remove the specific page id from the buffer pool.
@@ -192,6 +219,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
+        pageCache.remove(pid.hashCode());
     }
 
     /**
@@ -201,6 +229,14 @@ public class BufferPool {
     private synchronized  void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1
+        Page page = pageCache.get(pid.hashCode());
+        DbFile file = Database.getCatalog().getDatabaseFile(page.getId().getTableId());
+        //将脏页保存下来再刷入磁盘
+        //不明白，以后再看看
+        Database.getLogFile().logWrite(page.isDirty(), page.getBeforeImage(), page);
+        Database.getLogFile().force();
+        file.writePage(page);
+        page.markDirty(false, null);
     }
 
     /** Write all pages of the specified transaction to disk.
@@ -217,6 +253,7 @@ public class BufferPool {
     private synchronized  void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
+
     }
 
 }

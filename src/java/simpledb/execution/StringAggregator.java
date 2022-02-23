@@ -1,7 +1,11 @@
 package simpledb.execution;
 
 import simpledb.common.Type;
-import simpledb.storage.Tuple;
+import simpledb.storage.*;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Knows how to compute some aggregate over a set of StringFields.
@@ -9,6 +13,15 @@ import simpledb.storage.Tuple;
 public class StringAggregator implements Aggregator {
 
     private static final long serialVersionUID = 1L;
+
+    private int gbField;
+    private Type gbFieldType;
+    private int aField;
+    private Op aggOp;
+
+    private TupleDesc td;
+    //只实现COUNT
+    private Map<Field, Integer> groupMap;
 
     /**
      * Aggregate constructor
@@ -21,6 +34,14 @@ public class StringAggregator implements Aggregator {
 
     public StringAggregator(int gbfield, Type gbfieldtype, int afield, Op what) {
         // some code goes here
+        this.gbField = gbfield;
+        this.gbFieldType = gbfieldtype;
+        this.aField = afield;
+        this.aggOp = what;
+        groupMap = new HashMap<>();
+        this.td = gbField != NO_GROUPING ?
+                new TupleDesc(new Type[]{gbFieldType, Type.INT_TYPE}, new String[]{"gbVal", "aggVal"})
+                : new TupleDesc(new Type[]{Type.INT_TYPE}, new String[]{"aggVal"});
     }
 
     /**
@@ -29,6 +50,17 @@ public class StringAggregator implements Aggregator {
      */
     public void mergeTupleIntoGroup(Tuple tup) {
         // some code goes here
+        StringField aggField = (StringField) tup.getField(aField);
+        String value = aggField.getValue();
+        Field groupField = gbField == NO_GROUPING ? null : tup.getField(gbField);
+        if(groupField != null && gbFieldType != groupField.getType()) {
+            throw new IllegalArgumentException("error gbField type!");
+        }
+        if(aggOp == Op.COUNT) {
+            groupMap.put(groupField, groupMap.getOrDefault(groupField, 0) + 1);
+        } else {
+            throw new IllegalArgumentException("Error Op Type");
+        }
     }
 
     /**
@@ -41,7 +73,23 @@ public class StringAggregator implements Aggregator {
      */
     public OpIterator iterator() {
         // some code goes here
-        throw new UnsupportedOperationException("please implement me for lab2");
+        ArrayList<Tuple> tuples = new ArrayList<>();
+        for(Field gField : groupMap.keySet()) {
+            Tuple tuple = new Tuple(this.td);
+            if (this.gbField == NO_GROUPING) {
+                tuple.setField(0, new IntField(groupMap.get(gField)));
+            } else {
+                tuple.setField(0, gField);
+                tuple.setField(1, new IntField(groupMap.get(gField)));
+            }
+            tuples.add(tuple);
+        }
+
+        return new TupleIterator(td, tuples);
     }
 
+    @Override
+    public TupleDesc getTupleDesc() {
+        return this.td;
+    }
 }

@@ -1,6 +1,7 @@
 package simpledb.execution;
 
 import simpledb.storage.Tuple;
+import simpledb.storage.TupleDesc;
 import simpledb.storage.TupleIterator;
 
 import java.io.Serializable;
@@ -84,5 +85,10 @@ public interface Aggregator extends Serializable {
      * @see TupleIterator for a possible helper
      */
     OpIterator iterator();
-    
+
+    /**
+     *
+     * @return 聚合器聚合结果的元组的描述信息
+     */
+    public TupleDesc getTupleDesc();
 }

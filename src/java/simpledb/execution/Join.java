@@ -14,6 +14,11 @@ public class Join extends Operator {
 
     private static final long serialVersionUID = 1L;
 
+    private final JoinPredicate p;
+    private OpIterator child1;
+    private OpIterator child2;
+    private Tuple t1;
+
     /**
      * Constructor. Accepts two children to join and the predicate to join them
      * on
@@ -27,11 +32,14 @@ public class Join extends Operator {
      */
     public Join(JoinPredicate p, OpIterator child1, OpIterator child2) {
         // some code goes here
+        this.p = p;
+        this.child1 = child1;
+        this.child2 = child2;
     }
 
     public JoinPredicate getJoinPredicate() {
         // some code goes here
-        return null;
+        return p;
     }
 
     /**
@@ -41,7 +49,7 @@ public class Join extends Operator {
      * */
     public String getJoinField1Name() {
         // some code goes here
-        return null;
+        return child1.getTupleDesc().getFieldName(p.getField1());
     }
 
     /**
@@ -51,7 +59,7 @@ public class Join extends Operator {
      * */
     public String getJoinField2Name() {
         // some code goes here
-        return null;
+        return child2.getTupleDesc().getFieldName(p.getField2());
     }
 
     /**
@@ -60,20 +68,28 @@ public class Join extends Operator {
      */
     public TupleDesc getTupleDesc() {
         // some code goes here
-        return null;
+        return TupleDesc.merge(child1.getTupleDesc(), child2.getTupleDesc());
     }
 
     public void open() throws DbException, NoSuchElementException,
             TransactionAbortedException {
         // some code goes here
+        super.open();
+        child1.open();
+        child2.open();
     }
 
     public void close() {
         // some code goes here
+        child2.close();
+        child1.close();
+        super.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
         // some code goes here
+        this.close();
+        this.open();
     }
 
     /**
@@ -96,18 +112,51 @@ public class Join extends Operator {
      */
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
         // some code goes here
+        //后面如果it1走到了后面，但是it2还有数据，可以用t1取匹配it2的数据
+        //每次只返回一个匹配的，child1走到最后了，child.hasNext()返回false, 但还能接着匹配
+        TupleDesc td1 = child1.getTupleDesc(), td2 = child2.getTupleDesc();
+        while (child1.hasNext() || t1 != null) {
+            if(child1.hasNext() && t1 == null) {
+                t1 = child1.next();
+            }
+            Tuple t2;
+            while(child2.hasNext()) {
+                t2 = child2.next();
+                if(p.filter(t1, t2)) {
+                    Tuple res = new Tuple(this.getTupleDesc());
+                    int i = 0;
+                    for(; i < td1.numFields(); i++) {
+                        res.setField(i, t1.getField(i));
+                    }
+                    for(int j = 0; j < td2.numFields(); j++) {
+                        res.setField(i + j, t2.getField(j));
+                    }
+                    //如果刚好是最后一个匹配到，需要重置child2指针和设置t1=null
+                    if(!child2.hasNext()) {
+                        child2.rewind();
+                        t1 = null;
+                    }
+                    return res;
+                }
+            }
+            //每次child2迭代器走到终点，需要进行重置child2的指针，否则会导致死循环；t1=null是为了选取child1的下一个tuple
+            child2.rewind();
+            t1 = null;
+        }
         return null;
     }
 
     @Override
     public OpIterator[] getChildren() {
         // some code goes here
-        return null;
+        return new OpIterator[]{child1, child2};
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
         // some code goes here
+        child1 = children[0];
+        child2 = children[1];
     }
 
 }
