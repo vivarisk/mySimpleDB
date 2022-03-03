@@ -4,11 +4,13 @@ import simpledb.common.Database;
 import simpledb.common.Permissions;
 import simpledb.common.DbException;
 import simpledb.common.DeadlockException;
+import simpledb.transaction.LockManager;
 import simpledb.transaction.TransactionAbortedException;
 import simpledb.transaction.TransactionId;
 
 import java.io.*;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,8 @@ public class BufferPool {
     private final int numPages;
     private final Map<Integer, Page> pageCache;
 
+    private LockManager lockManager;
+
     /**
      * Creates a BufferPool that caches up to numPages pages.
      *
@@ -46,12 +50,36 @@ public class BufferPool {
     public BufferPool(int numPages) {
         // some code goes here
         this.numPages = numPages;
-        pageCache = new LinkedHashMap<Integer, Page>(pageSize, 0.75f, true){
+        this.lockManager = new LockManager();
+        Map<Integer, Page> tmpPageCache = new LinkedHashMap<Integer, Page>(pageSize, 0.75f, true){
             @Override
             protected boolean removeEldestEntry(Map.Entry<Integer, Page> eldest) {
-                return size() > numPages;
+                boolean res = size() > numPages;
+                if (res) {
+                    //如果需要淘汰页面，需要判断被淘汰的页面是否为脏页面，如果是脏页面则需要刷入磁盘
+                    //否则有数据不一致的风险
+                    //实现二阶段严格封锁协议，不能把脏页驱逐出去
+                    Page page = eldest.getValue();
+                    Integer key = eldest.getKey();
+                    if (page.isDirty() != null) {
+                        for (Page p : pageCache.values()) {
+                            if (p.isDirty() == null) {
+                                discardPage(p.getId());
+                                return false;
+                            }
+                        }
+                        try {
+                            throw new DbException("all pages are dirty page!!!");
+                        } catch (DbException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+                return res;
             }
         };
+        Map<Integer, Page> map = Collections.synchronizedMap(tmpPageCache);
+        pageCache = map;
     }
     
     public static int getPageSize() {
@@ -83,9 +111,28 @@ public class BufferPool {
      * @param pid the ID of the requested page
      * @param perm the requested permissions on the page
      */
-    public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
+    public synchronized Page getPage(TransactionId tid, PageId pid, Permissions perm)
         throws TransactionAbortedException, DbException {
         // some code goes here
+        int type;
+        if (perm == Permissions.READ_ONLY) {
+            type = 0;
+        } else {
+            type = 1;
+        }
+        long st = System.currentTimeMillis();
+        while (true) {
+            //获取锁，如果获取不到会阻塞
+            try {
+                if (lockManager.requireLock(pid, tid, type)) {
+                    break;
+                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            long now = System.currentTimeMillis();
+            if (now - st > 500) throw new TransactionAbortedException();
+        }
         if(!pageCache.containsKey(pid.hashCode())){
             DbFile dbFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
             Page page = dbFile.readPage(pid);
@@ -103,9 +150,10 @@ public class BufferPool {
      * @param tid the ID of the transaction requesting the unlock
      * @param pid the ID of the page to unlock
      */
-    public  void unsafeReleasePage(TransactionId tid, PageId pid) {
+    public synchronized void unsafeReleasePage(TransactionId tid, PageId pid) {
         // some code goes here
         // not necessary for lab1|lab2
+        lockManager.releaseLock(pid, tid);
     }
 
     /**
@@ -113,16 +161,17 @@ public class BufferPool {
      *
      * @param tid the ID of the transaction requesting the unlock
      */
-    public void transactionComplete(TransactionId tid) {
+    public synchronized void transactionComplete(TransactionId tid) {
         // some code goes here
         // not necessary for lab1|lab2
+        transactionComplete(tid, true);
     }
 
     /** Return true if the specified transaction has a lock on the specified page */
     public boolean holdsLock(TransactionId tid, PageId p) {
         // some code goes here
         // not necessary for lab1|lab2
-        return false;
+        return lockManager.isHoldLock(p, tid);
     }
 
     /**
@@ -132,9 +181,35 @@ public class BufferPool {
      * @param tid the ID of the transaction requesting the unlock
      * @param commit a flag indicating whether we should commit or abort
      */
-    public void transactionComplete(TransactionId tid, boolean commit) {
+    public synchronized void transactionComplete(TransactionId tid, boolean commit) {
         // some code goes here
         // not necessary for lab1|lab2
+        if (commit) {
+            //如果成功提交，将所有脏页写回瓷盘
+            try {
+                flushPages(tid);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            //如果提交失败，回滚，将脏页的原页面写回磁盘
+            recoverPages(tid);
+        }
+        lockManager.completeTransaction(tid);
+    }
+
+    private synchronized void recoverPages(TransactionId tid) {
+        //从磁盘重新读回page
+        for(Map.Entry<Integer, Page> entry : pageCache.entrySet()) {
+            Page page = entry.getValue();
+            if (page.isDirty() == tid) {
+                int tableId = page.getId().getTableId();
+                DbFile file = Database.getCatalog().getDatabaseFile(tableId);
+                Page p = file.readPage(page.getId());
+                System.out.println((p.getId() == page.getId()) + "=============");
+                pageCache.put(p.getId().hashCode(), p);
+            }
+        }
     }
 
     /**
@@ -229,10 +304,20 @@ public class BufferPool {
     private synchronized  void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1
-        Page page = pageCache.get(pid.hashCode());
+
+        //pageCache实现了LRU, get()方法改变了链表的顺序，pageCache迭代错乱
+        //997，999，1001 --> 999,1001,997
+        //Page page = pageCache.get(pid.hashCode());
+        Page page = null;
+        for(Map.Entry<Integer, Page> entry : pageCache.entrySet()) {
+            Integer key = entry.getKey();
+            if (key == pid.hashCode()) {
+                page = entry.getValue();
+                break;
+            }
+        }
         DbFile file = Database.getCatalog().getDatabaseFile(page.getId().getTableId());
         //将脏页保存下来再刷入磁盘
-        //不明白，以后再看看
         Database.getLogFile().logWrite(page.isDirty(), page.getBeforeImage(), page);
         Database.getLogFile().force();
         file.writePage(page);
@@ -244,6 +329,15 @@ public class BufferPool {
     public synchronized  void flushPages(TransactionId tid) throws IOException {
         // some code goes here
         // not necessary for lab1|lab2
+        for(Map.Entry<Integer, Page> entry : pageCache.entrySet()) {
+            Page page = entry.getValue();
+            //要先保存before image
+            //更新page的oldData
+            page.setBeforeImage();
+            if (page.isDirty() == tid) {
+                flushPage(page.getId());
+            }
+        }
     }
 
     /**
@@ -253,7 +347,7 @@ public class BufferPool {
     private synchronized  void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
-
+        //使用LinkedHashMap，自带页面淘汰功能
     }
 
 }

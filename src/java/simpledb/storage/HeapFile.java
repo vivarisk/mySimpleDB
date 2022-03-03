@@ -141,14 +141,19 @@ public class HeapFile implements DbFile {
     public List<Page> insertTuple(TransactionId tid, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
         // some code goes here
-        ArrayList<Page> pageList= new ArrayList<Page>();
+        ArrayList<Page> pageList= new ArrayList<>();
         for(int i=0;i<numPages();++i){
             // took care of getting new page
+            PageId pid = new HeapPageId(this.getId(), i);
             HeapPage p = (HeapPage) Database.getBufferPool().getPage(tid,
-                    new HeapPageId(this.getId(),i),Permissions.READ_WRITE);
-            if(p.getNumEmptySlots() == 0)
+                    pid,Permissions.READ_WRITE);
+            //虽然违背严格两阶段协议，看lab4 exercise2的说明
+            if(p.getNumEmptySlots() == 0){
+                Database.getBufferPool().unsafeReleasePage(tid, pid);
                 continue;
+            }
             p.insertTuple(t);
+            p.markDirty(true, tid);
             pageList.add(p);
             return pageList;
         }
@@ -162,6 +167,7 @@ public class HeapFile implements DbFile {
         HeapPage p = (HeapPage) Database.getBufferPool().getPage(tid,
                 new HeapPageId(getId(),numPages()-1),Permissions.READ_WRITE);
         p.insertTuple(t);
+        p.markDirty(true, tid);
         pageList.add(p);
         return pageList;
         // not necessary for lab1
@@ -175,6 +181,7 @@ public class HeapFile implements DbFile {
         HeapPage p = (HeapPage) Database.getBufferPool().getPage(tid,
                 t.getRecordId().getPageId(),Permissions.READ_WRITE);
         p.deleteTuple(t);
+        p.markDirty(true, tid);
         pageList.add(p);
         return pageList;
         // not necessary for lab1
